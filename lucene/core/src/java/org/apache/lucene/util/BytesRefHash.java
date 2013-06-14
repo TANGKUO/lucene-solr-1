@@ -59,6 +59,7 @@ public final class BytesRefHash {
   private int count;
   private int lastCount = -1;
   private int[] ids;
+  private int[] hashes;
   private final BytesStartArray bytesStartArray;
   private Counter bytesUsed;
 
@@ -88,6 +89,7 @@ public final class BytesRefHash {
     this.pool = pool;
     ids = new int[hashSize];
     Arrays.fill(ids, -1);
+    hashes = new int[hashSize];
     this.bytesStartArray = bytesStartArray;
     bytesStart = bytesStartArray.init();
     bytesUsed = bytesStartArray.bytesUsed() == null? Counter.newCounter() : bytesStartArray.bytesUsed();

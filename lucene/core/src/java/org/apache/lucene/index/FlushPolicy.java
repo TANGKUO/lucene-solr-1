@@ -95,7 +95,7 @@ abstract class FlushPolicy implements Cloneable {
    */
   protected synchronized void init(DocumentsWriter docsWriter) {
     writer.set(docsWriter);
-    indexWriterConfig = docsWriter.indexWriter.getConfig();
+    indexWriterConfig = docsWriter.getIndexWriterConfig();
   }
 
   /**

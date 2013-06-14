@@ -66,14 +66,18 @@ final class DocumentsWriterFlushControl  {
   private boolean closed = false;
   private final DocumentsWriter documentsWriter;
   private final LiveIndexWriterConfig config;
+  private final BufferedDeletesStream bufferedDeletesStream;
+  private final IndexWriter writer;
 
-  DocumentsWriterFlushControl(DocumentsWriter documentsWriter, LiveIndexWriterConfig config) {
+  DocumentsWriterFlushControl(DocumentsWriter documentsWriter, IndexWriter writer) {
     this.stallControl = new DocumentsWriterStallControl();
     this.perThreadPool = documentsWriter.perThreadPool;
     this.flushPolicy = documentsWriter.flushPolicy;
+    this.config = writer.getConfig();
     this.hardMaxBytesPerDWPT = config.getRAMPerThreadHardLimitMB() * 1024 * 1024;
-    this.config = config;
     this.documentsWriter = documentsWriter;
+    this.bufferedDeletesStream = writer.bufferedDeletesStream;
+    this.writer = writer;
   }
 
   public synchronized long activeBytes() {
@@ -240,7 +244,6 @@ final class DocumentsWriterFlushControl  {
   }
   
   public synchronized void waitForFlush() {
-    assert !Thread.holdsLock(this.documentsWriter.indexWriter) : "IW lock should never be hold when waiting on flush";
     while (flushingWriters.size() != 0) {
       try {
         this.wait();
@@ -311,7 +314,7 @@ final class DocumentsWriterFlushControl  {
       // We are pending so all memory is already moved to flushBytes
       if (perThread.tryLock()) {
         try {
-          if (perThread.isActive()) {
+          if (perThread.isInitialized()) {
             assert perThread.isHeldByCurrentThread();
             final DocumentsWriterPerThread dwpt;
             final long bytes = perThread.bytesUsed; // do that before
@@ -413,11 +416,11 @@ final class DocumentsWriterFlushControl  {
    * Returns the number of delete terms in the global pool
    */
   public int getNumGlobalTermDeletes() {
-    return documentsWriter.deleteQueue.numGlobalTermDeletes() + documentsWriter.indexWriter.bufferedDeletesStream.numTerms();
+    return documentsWriter.deleteQueue.numGlobalTermDeletes() + bufferedDeletesStream.numTerms();
   }
   
   public long getDeleteBytesUsed() {
-    return documentsWriter.deleteQueue.bytesUsed() + documentsWriter.indexWriter.bufferedDeletesStream.bytesUsed();
+    return documentsWriter.deleteQueue.bytesUsed() + bufferedDeletesStream.bytesUsed();
   }
 
   synchronized int numFlushingDWPT() {
@@ -441,12 +444,15 @@ final class DocumentsWriterFlushControl  {
         .currentThread(), documentsWriter);
     boolean success = false;
     try {
-      if (perThread.isActive()
+      if (perThread.isInitialized()
           && perThread.dwpt.deleteQueue != documentsWriter.deleteQueue) {
         // There is a flush-all in process and this DWPT is
         // now stale -- enroll it for flush and try for
         // another DWPT:
         addFlushableState(perThread);
+      }
+      if (!closed && perThread.isActive() && !perThread.isInitialized()) {
+        initializeThreadState(perThread);
       }
       success = true;
       // simply return the ThreadState even in a flush all case sine we already hold the lock
@@ -456,6 +462,22 @@ final class DocumentsWriterFlushControl  {
         perThread.unlock();
       }
     }
+  }
+  
+  ThreadState initializeThreadState(ThreadState state) {
+    if (state.isActive() && state.dwpt == null) {
+      state.dwpt = newDWPT();
+    }
+    return state;
+  }
+  
+  private DocumentsWriterPerThread newDWPT() {
+    final FieldInfos.Builder infos = new FieldInfos.Builder(writer.globalFieldNumberMap);
+    return new DocumentsWriterPerThread(
+        writer.newSegmentName(), documentsWriter.directory,
+        documentsWriter.indexWriterConfig, documentsWriter.infoStream,
+        documentsWriter.codec, documentsWriter.deleteQueue, infos,
+        documentsWriter.chain);
   }
   
   void markForFullFlush() {
@@ -475,7 +497,10 @@ final class DocumentsWriterFlushControl  {
       final ThreadState next = perThreadPool.getThreadState(i);
       next.lock();
       try {
-        if (!next.isActive()) {
+        if (!next.isInitialized()) {
+          if (closed && next.isActive()) {
+            perThreadPool.deactivateThreadState(next);
+          }
           continue; 
         }
         assert next.dwpt.deleteQueue == flushingQueue
@@ -515,7 +540,7 @@ final class DocumentsWriterFlushControl  {
       final ThreadState next = perThreadPool.getThreadState(i);
       next.lock();
       try {
-        assert !next.isActive() || next.dwpt.deleteQueue == queue;
+        assert !next.isInitialized() || next.dwpt.deleteQueue == queue;
       } finally {
         next.unlock();
       }
@@ -531,7 +556,7 @@ final class DocumentsWriterFlushControl  {
     }
     final DocumentsWriterPerThread dwpt = perThread.dwpt;
     assert perThread.isHeldByCurrentThread();
-    assert perThread.isActive();
+    assert perThread.isInitialized();
     assert fullFlush;
     assert dwpt.deleteQueue != documentsWriter.deleteQueue;
     if (dwpt.getNumDocsInRAM() > 0) {
@@ -547,8 +572,6 @@ final class DocumentsWriterFlushControl  {
     } else {
       if (closed) {
         perThreadPool.deactivateThreadState(perThread); // make this state inactive
-      } else {
-        perThreadPool.reinitThreadState(perThread);
       }
     }
   }
@@ -606,6 +629,7 @@ final class DocumentsWriterFlushControl  {
     try {
       for (DocumentsWriterPerThread dwpt : flushQueue) {
         try {
+          documentsWriter.subtractFlushedNumDocs(dwpt.getNumDocsInRAM());
           dwpt.abort();
         } catch (Throwable ex) {
           // ignore - keep on aborting the flush queue
@@ -617,6 +641,7 @@ final class DocumentsWriterFlushControl  {
         try {
           flushingWriters
               .put(blockedFlush.dwpt, Long.valueOf(blockedFlush.bytes));
+          documentsWriter.subtractFlushedNumDocs(blockedFlush.dwpt.getNumDocsInRAM());
           blockedFlush.dwpt.abort();
         } catch (Throwable ex) {
           // ignore - keep on aborting the blocked queue
