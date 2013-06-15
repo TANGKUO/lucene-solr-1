@@ -23,6 +23,7 @@ import java.util.List;
 import java.util.Iterator;
 import java.util.LinkedList;
 import java.util.Queue;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 import org.apache.lucene.index.DocumentsWriterPerThreadPool.ThreadState;
@@ -599,20 +600,20 @@ final class DocumentsWriterFlushControl  {
     return true;
   }
 
-  synchronized void abortFullFlushes() {
+  synchronized void abortFullFlushes(Set<String> newFiles) {
    try {
-     abortPendingFlushes();
+     abortPendingFlushes(newFiles);
    } finally {
      fullFlush = false;
    }
   }
   
-  synchronized void abortPendingFlushes() {
+  synchronized void abortPendingFlushes(Set<String> newFiles) {
     try {
       for (DocumentsWriterPerThread dwpt : flushQueue) {
         try {
           documentsWriter.subtractFlushedNumDocs(dwpt.getNumDocsInRAM());
-          dwpt.abort();
+          dwpt.abort(newFiles);
         } catch (Throwable ex) {
           // ignore - keep on aborting the flush queue
         } finally {
@@ -624,7 +625,7 @@ final class DocumentsWriterFlushControl  {
           flushingWriters
               .put(blockedFlush.dwpt, Long.valueOf(blockedFlush.bytes));
           documentsWriter.subtractFlushedNumDocs(blockedFlush.dwpt.getNumDocsInRAM());
-          blockedFlush.dwpt.abort();
+          blockedFlush.dwpt.abort(newFiles);
         } catch (Throwable ex) {
           // ignore - keep on aborting the blocked queue
         } finally {

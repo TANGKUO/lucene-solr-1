@@ -20,7 +20,6 @@ package org.apache.lucene.index;
 import java.io.IOException;
 import java.util.Collection;
 import java.util.HashSet;
-import java.util.LinkedList;
 import java.util.Queue;
 import java.util.Set;
 import java.util.concurrent.ConcurrentLinkedQueue;
@@ -31,7 +30,6 @@ import org.apache.lucene.index.DocumentsWriterFlushQueue.SegmentFlushTicket;
 import org.apache.lucene.index.DocumentsWriterPerThread.FlushedSegment;
 import org.apache.lucene.index.DocumentsWriterPerThreadPool.ThreadState;
 import org.apache.lucene.index.IndexWriter.Event;
-import org.apache.lucene.index.MergePolicy.OneMerge;
 import org.apache.lucene.search.Query;
 import org.apache.lucene.store.AlreadyClosedException;
 import org.apache.lucene.store.Directory;
@@ -219,8 +217,8 @@ final class DocumentsWriter {
           perThread.unlock();
         }
       }
+      flushControl.abortPendingFlushes(newFilesSet);
       putEvent(new DeleteNewFilesEvent(newFilesSet));
-      flushControl.abortPendingFlushes();
       flushControl.waitForFlush();
       success = true;
     } finally {
@@ -246,8 +244,8 @@ final class DocumentsWriter {
         abortThreadState(perThread, newFilesSet);
       }
       deleteQueue.clear();
+      flushControl.abortPendingFlushes(newFilesSet);
       putEvent(new DeleteNewFilesEvent(newFilesSet));
-      flushControl.abortPendingFlushes();
       flushControl.waitForFlush();
       success = true;
     } finally {
@@ -267,10 +265,8 @@ final class DocumentsWriter {
       if (perThread.isInitialized()) { 
         try {
           subtractFlushedNumDocs(perThread.dwpt.getNumDocsInRAM());
-          perThread.dwpt.abort();
+          perThread.dwpt.abort(newFiles);
         } finally {
-          SegmentInfo segmentInfo = perThread.dwpt.getSegmentInfo();
-          segmentInfo.setFiles(newFiles);
           perThread.dwpt.checkAndResetHasAborted();
           flushControl.doOnAbort(perThread);
         }
@@ -414,6 +410,9 @@ final class DocumentsWriter {
         numDocsInRAM.addAndGet(docCount);
       } finally {
         if (dwpt.checkAndResetHasAborted()) {
+          if (!dwpt.pendingFilesToDelete().isEmpty()) {
+            putEvent(new DeleteNewFilesEvent(dwpt.pendingFilesToDelete()));
+          }
           subtractFlushedNumDocs(dwptNumDocs);
           flushControl.doOnAbort(perThread);
         }
@@ -449,6 +448,9 @@ final class DocumentsWriter {
         numDocsInRAM.incrementAndGet();
       } finally {
         if (dwpt.checkAndResetHasAborted()) {
+          if (!dwpt.pendingFilesToDelete().isEmpty()) {
+            putEvent(new DeleteNewFilesEvent(dwpt.pendingFilesToDelete()));
+          }
           subtractFlushedNumDocs(dwptNumDocs);
           flushControl.doOnAbort(perThread);
         }
@@ -500,8 +502,8 @@ final class DocumentsWriter {
             dwptSuccess = true;
           } finally {
             subtractFlushedNumDocs(flushingDocsInRam);
-            if (flushingDWPT.filesToDelete != null) {
-              putEvent(new DeleteNewFilesEvent(flushingDWPT.filesToDelete));
+            if (!flushingDWPT.pendingFilesToDelete().isEmpty()) {
+              putEvent(new DeleteNewFilesEvent(flushingDWPT.pendingFilesToDelete()));
               hasEvents = true;
             }
             if (!dwptSuccess) {
@@ -632,7 +634,10 @@ final class DocumentsWriter {
         // Release the flush lock
         flushControl.finishFullFlush();
       } else {
-        flushControl.abortFullFlushes();
+        Set<String> newFilesSet = new HashSet<>();
+        flushControl.abortFullFlushes(newFilesSet);
+        putEvent(new DeleteNewFilesEvent(newFilesSet));
+
       }
     } finally {
       pendingChangesInCurrentFullFlush = false;
