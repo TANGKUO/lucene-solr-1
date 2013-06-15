@@ -195,14 +195,14 @@ class DocumentsWriterPerThread {
   private final LiveIndexWriterConfig indexWriterConfig;
 
   
-  public DocumentsWriterPerThread(String segmentName, Directory directory, LiveIndexWriterConfig indexWriterConfig, InfoStream infoStream, Codec codec, DocumentsWriterDeleteQueue deleteQueue,
-      FieldInfos.Builder fieldInfos, IndexingChain indexingChain) {
+  public DocumentsWriterPerThread(String segmentName, Directory directory, LiveIndexWriterConfig indexWriterConfig, InfoStream infoStream, DocumentsWriterDeleteQueue deleteQueue,
+      FieldInfos.Builder fieldInfos) {
     this.directoryOrig = directory;
     this.directory = new TrackingDirectoryWrapper(directory);
     this.fieldInfos = fieldInfos;
     this.indexWriterConfig = indexWriterConfig;
     this.infoStream = infoStream;
-    this.codec = codec;
+    this.codec = indexWriterConfig.getCodec();
     this.docState = new DocState(this, infoStream);
     this.docState.similarity = indexWriterConfig.getSimilarity();
     bytesUsed = Counter.newCounter();
@@ -222,7 +222,7 @@ class DocumentsWriterPerThread {
     }
     // this should be the last call in the ctor 
     // it really sucks that we need to pull this within the ctor and pass this ref to the chain!
-    consumer = indexingChain.getChain(this);
+    consumer = indexWriterConfig.getIndexingChain().getChain(this);
 
   }
   

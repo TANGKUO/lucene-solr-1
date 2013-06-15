@@ -26,6 +26,7 @@ import java.util.Queue;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 import org.apache.lucene.index.DocumentsWriterPerThreadPool.ThreadState;
+import org.apache.lucene.util.InfoStream;
 import org.apache.lucene.util.ThreadInterruptedException;
 
 /**
@@ -67,17 +68,17 @@ final class DocumentsWriterFlushControl  {
   private final DocumentsWriter documentsWriter;
   private final LiveIndexWriterConfig config;
   private final BufferedDeletesStream bufferedDeletesStream;
-  private final IndexWriter writer;
+  private final InfoStream infoStream;
 
-  DocumentsWriterFlushControl(DocumentsWriter documentsWriter, IndexWriter writer) {
+  DocumentsWriterFlushControl(DocumentsWriter documentsWriter, LiveIndexWriterConfig config, BufferedDeletesStream bufferedDeletesStream) {
+    this.infoStream = config.getInfoStream();
     this.stallControl = new DocumentsWriterStallControl();
     this.perThreadPool = documentsWriter.perThreadPool;
     this.flushPolicy = documentsWriter.flushPolicy;
-    this.config = writer.getConfig();
+    this.config = config;
     this.hardMaxBytesPerDWPT = config.getRAMPerThreadHardLimitMB() * 1024 * 1024;
     this.documentsWriter = documentsWriter;
-    this.bufferedDeletesStream = writer.bufferedDeletesStream;
-    this.writer = writer;
+    this.bufferedDeletesStream = bufferedDeletesStream;
   }
 
   public synchronized long activeBytes() {
@@ -451,9 +452,6 @@ final class DocumentsWriterFlushControl  {
         // another DWPT:
         addFlushableState(perThread);
       }
-      if (!closed && perThread.isActive() && !perThread.isInitialized()) {
-        initializeThreadState(perThread);
-      }
       success = true;
       // simply return the ThreadState even in a flush all case sine we already hold the lock
       return perThread;
@@ -462,22 +460,6 @@ final class DocumentsWriterFlushControl  {
         perThread.unlock();
       }
     }
-  }
-  
-  ThreadState initializeThreadState(ThreadState state) {
-    if (state.isActive() && state.dwpt == null) {
-      state.dwpt = newDWPT();
-    }
-    return state;
-  }
-  
-  private DocumentsWriterPerThread newDWPT() {
-    final FieldInfos.Builder infos = new FieldInfos.Builder(writer.globalFieldNumberMap);
-    return new DocumentsWriterPerThread(
-        writer.newSegmentName(), documentsWriter.directory,
-        documentsWriter.indexWriterConfig, documentsWriter.infoStream,
-        documentsWriter.codec, documentsWriter.deleteQueue, infos,
-        documentsWriter.chain);
   }
   
   void markForFullFlush() {
@@ -551,8 +533,8 @@ final class DocumentsWriterFlushControl  {
   private final List<DocumentsWriterPerThread> fullFlushBuffer = new ArrayList<DocumentsWriterPerThread>();
 
   void addFlushableState(ThreadState perThread) {
-    if (documentsWriter.infoStream.isEnabled("DWFC")) {
-      documentsWriter.infoStream.message("DWFC", "addFlushableState " + perThread.dwpt);
+    if (infoStream.isEnabled("DWFC")) {
+      infoStream.message("DWFC", "addFlushableState " + perThread.dwpt);
     }
     final DocumentsWriterPerThread dwpt = perThread.dwpt;
     assert perThread.isHeldByCurrentThread();
@@ -695,8 +677,8 @@ final class DocumentsWriterFlushControl  {
    * checked out DWPT are available
    */
   void waitIfStalled() {
-    if (documentsWriter.infoStream.isEnabled("DWFC")) {
-      documentsWriter.infoStream.message("DWFC",
+    if (infoStream.isEnabled("DWFC")) {
+      infoStream.message("DWFC",
           "waitIfStalled: numFlushesPending: " + flushQueue.size()
               + " netBytes: " + netBytes() + " flushBytes: " + flushBytes()
               + " fullFlush: " + fullFlush);
@@ -709,6 +691,13 @@ final class DocumentsWriterFlushControl  {
    */
   boolean anyStalledThreads() {
     return stallControl.anyStalledThreads();
+  }
+  
+  /**
+   * Returns the {@link IndexWriter} {@link InfoStream}
+   */
+  public InfoStream getInfoStream() {
+    return infoStream;
   }
   
   

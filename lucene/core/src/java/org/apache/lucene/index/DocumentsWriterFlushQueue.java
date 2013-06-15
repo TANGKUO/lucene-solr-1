@@ -94,8 +94,9 @@ class DocumentsWriterFlushQueue {
     return ticketCount.get() != 0;
   }
 
-  private void innerPurge(IndexWriter writer) throws IOException {
+  private int innerPurge(IndexWriter writer) throws IOException {
     assert purgeLock.isHeldByCurrentThread();
+    int numPurged = 0;
     while (true) {
       final FlushTicket head;
       final boolean canPublish;
@@ -104,6 +105,7 @@ class DocumentsWriterFlushQueue {
         canPublish = head != null && head.canPublish(); // do this synced 
       }
       if (canPublish) {
+        numPurged++;
         try {
           /*
            * if we block on publish -> lock IW -> lock BufferedDeletes we don't block
@@ -112,6 +114,7 @@ class DocumentsWriterFlushQueue {
            * be a ticket still in the queue. 
            */
           head.publish(writer);
+          
         } finally {
           synchronized (this) {
             // finally remove the published ticket from the queue
@@ -124,29 +127,31 @@ class DocumentsWriterFlushQueue {
         break;
       }
     }
+    return numPurged;
   }
 
-  void forcePurge(IndexWriter writer) throws IOException {
+  int forcePurge(IndexWriter writer) throws IOException {
     assert !Thread.holdsLock(this);
     assert !Thread.holdsLock(writer);
     purgeLock.lock();
     try {
-      innerPurge(writer);
+      return innerPurge(writer);
     } finally {
       purgeLock.unlock();
     }
   }
 
-  void tryPurge(IndexWriter writer) throws IOException {
+  int tryPurge(IndexWriter writer) throws IOException {
     assert !Thread.holdsLock(this);
     assert !Thread.holdsLock(writer);
     if (purgeLock.tryLock()) {
       try {
-        innerPurge(writer);
+        return innerPurge(writer);
       } finally {
         purgeLock.unlock();
       }
     }
+    return 0;
   }
 
   public int getTicketCount() {
@@ -195,19 +200,19 @@ class DocumentsWriterFlushQueue {
     
     protected final void finishFlush(IndexWriter indexWriter, FlushedSegment newSegment, FrozenBufferedDeletes bufferedDeletes)
             throws IOException {
-          // Finish the flushed segment and publish it to IndexWriter
-          if (newSegment == null) {
-            assert bufferedDeletes != null;
-            if (bufferedDeletes != null && bufferedDeletes.any()) {
-              indexWriter.publishFrozenDeletes(bufferedDeletes);
-              if (indexWriter.infoStream.isEnabled("DW")) {
-                  indexWriter.infoStream.message("DW", "flush: push buffered deletes: " + bufferedDeletes);
-              }
+        // Finish the flushed segment and publish it to IndexWriter
+        if (newSegment == null) {
+          assert bufferedDeletes != null;
+          if (bufferedDeletes != null && bufferedDeletes.any()) {
+            indexWriter.publishFrozenDeletes(bufferedDeletes);
+            if (indexWriter.infoStream.isEnabled("DW")) {
+                indexWriter.infoStream.message("DW", "flush: push buffered deletes: " + bufferedDeletes);
             }
-          } else {
-              publishFlushedSegment(indexWriter, newSegment, bufferedDeletes);  
           }
+        } else {
+            publishFlushedSegment(indexWriter, newSegment, bufferedDeletes);  
         }
+      }
   }
   
   static final class GlobalDeletesTicket extends FlushTicket {
