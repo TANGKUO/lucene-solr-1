@@ -94,8 +94,8 @@ abstract class FlushPolicy implements Cloneable {
   /**
    * Called by DocumentsWriter to initialize the FlushPolicy
    */
-  protected synchronized void init(DocumentsWriter docsWriter) {
-    indexWriterConfig = docsWriter.getIndexWriterConfig();
+  protected synchronized void init(LiveIndexWriterConfig indexWriterConfig) {
+    this.indexWriterConfig = indexWriterConfig;
     infoStream = indexWriterConfig.getInfoStream();
   }
 

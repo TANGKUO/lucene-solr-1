@@ -30,12 +30,12 @@ import java.util.LinkedList;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Queue;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import org.apache.lucene.analysis.Analyzer;
 import org.apache.lucene.codecs.Codec;
-import org.apache.lucene.index.DocumentsWriter.Event;
 import org.apache.lucene.index.FieldInfos.FieldNumbers;
 import org.apache.lucene.index.IndexWriterConfig.OpenMode;
 import org.apache.lucene.index.MergePolicy.MergeTrigger;
@@ -228,6 +228,7 @@ public class IndexWriter implements Closeable, TwoPhaseCommit{
   final FieldNumbers globalFieldNumberMap;
 
   private DocumentsWriter docWriter;
+  private final Queue<Event> eventQueue;
   final IndexFileDeleter deleter;
 
   // used by forceMerge to note those needing merging
@@ -731,7 +732,9 @@ public class IndexWriter implements Closeable, TwoPhaseCommit{
 
       // start with previous field numbers, but new FieldInfos
       globalFieldNumberMap = getFieldNumberMap();
+      config.getFlushPolicy().init(config);
       docWriter = new DocumentsWriter(this, config, directory);
+      eventQueue = docWriter.eventQueue();
 
       // Default deleter (for backwards compatibility) is
       // KeepOnlyLastCommitDeleter:
@@ -4346,12 +4349,20 @@ public class IndexWriter implements Closeable, TwoPhaseCommit{
   }
   
   private boolean processEvents(boolean triggerMerge, boolean forcePurge) throws IOException {
+    return processEvents(eventQueue, triggerMerge, forcePurge);
+  }
+  
+  private boolean processEvents(Queue<Event> queue, boolean triggerMerge, boolean forcePurge) throws IOException {
     Event event;
     boolean processed = false;
-    while((event = docWriter.pollNextEvent()) != null)  {
+    while((event = queue.poll()) != null)  {
       processed = true;
       event.process(this, triggerMerge, forcePurge);
     }
     return processed;
+  }
+  
+  public static interface Event {
+    public void process(IndexWriter writer, boolean triggerMerge, boolean forcePurge) throws IOException;
   }
 }

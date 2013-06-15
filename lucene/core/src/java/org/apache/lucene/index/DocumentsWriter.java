@@ -20,6 +20,8 @@ package org.apache.lucene.index;
 import java.io.IOException;
 import java.util.Collection;
 import java.util.HashSet;
+import java.util.LinkedList;
+import java.util.Queue;
 import java.util.Set;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -28,6 +30,8 @@ import org.apache.lucene.analysis.Analyzer;
 import org.apache.lucene.index.DocumentsWriterFlushQueue.SegmentFlushTicket;
 import org.apache.lucene.index.DocumentsWriterPerThread.FlushedSegment;
 import org.apache.lucene.index.DocumentsWriterPerThreadPool.ThreadState;
+import org.apache.lucene.index.IndexWriter.Event;
+import org.apache.lucene.index.MergePolicy.OneMerge;
 import org.apache.lucene.search.Query;
 import org.apache.lucene.store.AlreadyClosedException;
 import org.apache.lucene.store.Directory;
@@ -123,6 +127,8 @@ final class DocumentsWriter {
   final FlushPolicy flushPolicy;
   final DocumentsWriterFlushControl flushControl;
   private final IndexWriter writer;
+  private final Queue<Event> events;
+
   
   DocumentsWriter(IndexWriter writer, LiveIndexWriterConfig config, Directory directory) {
     this.directory = directory;
@@ -131,8 +137,7 @@ final class DocumentsWriter {
     this.perThreadPool = config.getIndexerThreadPool();
     flushPolicy = config.getFlushPolicy();
     this.writer = writer;
-    assert flushPolicy != null;
-    flushPolicy.init(this);
+    this.events = new ConcurrentLinkedQueue<Event>();
     flushControl = new DocumentsWriterFlushControl(this, config, writer.bufferedDeletesStream);
   }
   
@@ -195,8 +200,8 @@ final class DocumentsWriter {
    *  updating the index files) and must discard all
    *  currently buffered docs.  This resets our state,
    *  discarding any docs added since last flush. */
-  synchronized void abort(IndexWriter indexWriter) {
-    assert !Thread.holdsLock(indexWriter) : "IW lock should never be hold when aborting";
+  synchronized void abort(IndexWriter writer) {
+    assert !Thread.holdsLock(writer) : "IndexWriter lock should never be hold when aborting";
     boolean success = false;
     final Set<String> newFilesSet = new HashSet<String>();
     try {
@@ -639,18 +644,8 @@ final class DocumentsWriter {
     return config;
   }
   
-  private final ConcurrentLinkedQueue<Event> events = new ConcurrentLinkedQueue<Event>();
-  
-  public Event pollNextEvent() {
-    return events.poll();
-  }
-  
-  public void putEvent(Event event) {
+  private void putEvent(Event event) {
     events.add(event);
-  }
-  
-  public static interface Event {
-    public void process(IndexWriter writer, boolean triggerMerge, boolean forcePurge) throws IOException;
   }
   
   static final class ApplyDeletesEvent implements Event {
@@ -689,14 +684,13 @@ final class DocumentsWriter {
       instCount++;
     }
     
-    
     @Override
     public void process(IndexWriter writer, boolean triggerMerge, boolean forcePurge) throws IOException {
       writer.purge(true);
     }
   }
   
-  static class FlushFailedEvent implements DocumentsWriter.Event {
+  static class FlushFailedEvent implements Event {
     private final SegmentInfo info;
     
     public FlushFailedEvent(SegmentInfo info) {
@@ -709,7 +703,7 @@ final class DocumentsWriter {
     }
   }
   
-  static class DeleteNewFilesEvent implements DocumentsWriter.Event {
+  static class DeleteNewFilesEvent implements Event {
     private final Collection<String>  files;
     
     public DeleteNewFilesEvent(Collection<String>  files) {
@@ -720,5 +714,9 @@ final class DocumentsWriter {
     public void process(IndexWriter writer, boolean triggerMerge, boolean forcePurge) throws IOException {
       writer.deleteNewFiles(files);
     }
+  }
+
+  public Queue<Event> eventQueue() {
+    return events;
   }
 }
