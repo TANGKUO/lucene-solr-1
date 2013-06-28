@@ -282,7 +282,7 @@ final class DocumentsWriterFlushControl  {
       }
       assert assertMemory();
       // Take it out of the loop this DWPT is stale
-      perThreadPool.replaceForFlush(state, closed);
+      perThreadPool.reset(state, closed);
     } finally {
       updateStallState();
     }
@@ -300,7 +300,7 @@ final class DocumentsWriterFlushControl  {
       assert fullFlush : "can not block if fullFlush == false";
       final DocumentsWriterPerThread dwpt;
       final long bytes = perThread.bytesUsed;
-      dwpt = perThreadPool.replaceForFlush(perThread, closed);
+      dwpt = perThreadPool.reset(perThread, closed);
       numPending--;
       blockedFlushes.add(new BlockedFlush(dwpt, bytes));
     }finally {
@@ -321,7 +321,7 @@ final class DocumentsWriterFlushControl  {
             final DocumentsWriterPerThread dwpt;
             final long bytes = perThread.bytesUsed; // do that before
                                                          // replace!
-            dwpt = perThreadPool.replaceForFlush(perThread, closed);
+            dwpt = perThreadPool.reset(perThread, closed);
             assert !flushingWriters.containsKey(dwpt) : "DWPT is already flushing";
             // Record the flushing DWPT to reduce flushBytes in doAfterFlush
             flushingWriters.put(dwpt, Long.valueOf(bytes));
@@ -523,7 +523,7 @@ final class DocumentsWriterFlushControl  {
       final ThreadState next = perThreadPool.getThreadState(i);
       next.lock();
       try {
-        assert !next.isInitialized() || next.dwpt.deleteQueue == queue;
+        assert !next.isInitialized() || next.dwpt.deleteQueue == queue : "isInitialized: " + next.isInitialized() + " numDocs: " + (next.isInitialized() ? next.dwpt.getNumDocsInRAM() : 0) ;
       } finally {
         next.unlock();
       }
@@ -553,9 +553,7 @@ final class DocumentsWriterFlushControl  {
         fullFlushBuffer.add(flushingDWPT);
       }
     } else {
-      if (closed) {
-        perThreadPool.deactivateThreadState(perThread); // make this state inactive
-      }
+        perThreadPool.reset(perThread, closed); // make this state inactive
     }
   }
   

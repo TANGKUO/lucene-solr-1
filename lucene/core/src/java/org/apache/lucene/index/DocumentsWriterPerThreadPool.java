@@ -245,7 +245,7 @@ abstract class DocumentsWriterPerThreadPool implements Cloneable {
     }
   }
   
-  DocumentsWriterPerThread replaceForFlush(ThreadState threadState, boolean closed) {
+  DocumentsWriterPerThread reset(ThreadState threadState, boolean closed) {
     assert threadState.isHeldByCurrentThread();
     final DocumentsWriterPerThread dwpt = threadState.dwpt;
     if (!closed) {
