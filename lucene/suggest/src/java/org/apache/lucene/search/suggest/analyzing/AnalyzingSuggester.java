@@ -157,10 +157,6 @@ public class AnalyzingSuggester extends Lookup {
    *  token separators when matching. */
   public static final int PRESERVE_SEP = 2;
 
-  /** Represents the separation between tokens, if
-   *  PRESERVE_SEP was specified */
-  private static final int SEP_LABEL = '\u001F';
-
   /** Marks end of the analyzed input and start of dedup
    *  byte. */
   private static final int END_BYTE = 0x0;
@@ -186,6 +182,8 @@ public class AnalyzingSuggester extends Lookup {
 
   /** Whether position holes should appear in the automaton. */
   private boolean preservePositionIncrements;
+
+  private AutomatonConverter converter;
 
   /**
    * Calls {@link #AnalyzingSuggester(Analyzer,Analyzer,int,int,int)
@@ -222,6 +220,10 @@ public class AnalyzingSuggester extends Lookup {
    *   no limit.
    */
   public AnalyzingSuggester(Analyzer indexAnalyzer, Analyzer queryAnalyzer, int options, int maxSurfaceFormsPerAnalyzedForm, int maxGraphExpansions) {
+    this(indexAnalyzer, queryAnalyzer, options, maxSurfaceFormsPerAnalyzedForm, maxGraphExpansions, AutomatonConverter.DEFAULT_CONVERTER);
+  }
+  
+  protected AnalyzingSuggester(Analyzer indexAnalyzer, Analyzer queryAnalyzer, int options, int maxSurfaceFormsPerAnalyzedForm, int maxGraphExpansions, AutomatonConverter converter) {
     this.indexAnalyzer = indexAnalyzer;
     this.queryAnalyzer = queryAnalyzer;
     if ((options & ~(EXACT_FIRST | PRESERVE_SEP)) != 0) {
@@ -244,7 +246,9 @@ public class AnalyzingSuggester extends Lookup {
     }
     this.maxGraphExpansions = maxGraphExpansions;
     preservePositionIncrements = true;
+    this.converter = converter;
   }
+
 
   /** Whether to take position holes (position increment > 1) into account when
    *  building the automaton, <code>true</code> by default. */
@@ -266,57 +270,6 @@ public class AnalyzingSuggester extends Lookup {
     }
   }
 
-  // Replaces SEP with epsilon or remaps them if
-  // we were asked to preserve them:
-  private void replaceSep(Automaton a) {
-
-    State[] states = a.getNumberedStates();
-
-    // Go in reverse topo sort so we know we only have to
-    // make one pass:
-    for(int stateNumber=states.length-1;stateNumber >=0;stateNumber--) {
-      final State state = states[stateNumber];
-      List<Transition> newTransitions = new ArrayList<Transition>();
-      for(Transition t : state.getTransitions()) {
-        assert t.getMin() == t.getMax();
-        if (t.getMin() == TokenStreamToAutomaton.POS_SEP) {
-          if (preserveSep) {
-            // Remap to SEP_LABEL:
-            newTransitions.add(new Transition(SEP_LABEL, t.getDest()));
-          } else {
-            copyDestTransitions(state, t.getDest(), newTransitions);
-            a.setDeterministic(false);
-          }
-        } else if (t.getMin() == TokenStreamToAutomaton.HOLE) {
-
-          // Just remove the hole: there will then be two
-          // SEP tokens next to each other, which will only
-          // match another hole at search time.  Note that
-          // it will also match an empty-string token ... if
-          // that's somehow a problem we can always map HOLE
-          // to a dedicated byte (and escape it in the
-          // input).
-          copyDestTransitions(state, t.getDest(), newTransitions);
-          a.setDeterministic(false);
-        } else {
-          newTransitions.add(t);
-        }
-      }
-      state.setTransitions(newTransitions.toArray(new Transition[newTransitions.size()]));
-    }
-  }
-
-  /** Used by subclass to change the lookup automaton, if
-   *  necessary. */
-  protected Automaton convertAutomaton(Automaton a) {
-    return a;
-  }
-  
-  TokenStreamToAutomaton getTokenStreamToAutomaton() {
-    final TokenStreamToAutomaton tsta = new TokenStreamToAutomaton();
-    tsta.setPreservePositionIncrements(preservePositionIncrements);
-    return tsta;
-  }
   
   private static class AnalyzingComparator implements Comparator<BytesRef> {
 
@@ -399,7 +352,7 @@ public class AnalyzingSuggester extends Lookup {
     Sort.ByteSequencesReader reader = null;
     BytesRef scratch = new BytesRef();
 
-    TokenStreamToAutomaton ts2a = getTokenStreamToAutomaton();
+    TokenStreamToAutomaton ts2a = converter.newTokenStreamToAutomaton(preservePositionIncrements);
 
     boolean success = false;
     byte buffer[] = new byte[8];
@@ -408,7 +361,7 @@ public class AnalyzingSuggester extends Lookup {
       BytesRef surfaceForm;
 
       while ((surfaceForm = iterator.next()) != null) {
-        Set<IntsRef> paths = toFiniteStrings(surfaceForm, ts2a);
+        Set<IntsRef> paths = converter.toFiniteStrings(surfaceForm, ts2a, indexAnalyzer, maxGraphExpansions, preserveSep);
         
         maxAnalyzedPathsForOneInput = Math.max(maxAnalyzedPathsForOneInput, paths.size());
 
@@ -675,7 +628,7 @@ public class AnalyzingSuggester extends Lookup {
     final BytesRef utf8Key = new BytesRef(key);
     try {
 
-      Automaton lookupAutomaton = toLookupAutomaton(key);
+      Automaton lookupAutomaton = converter.toLookupAutomaton(key, queryAnalyzer, converter.newTokenStreamToAutomaton(preservePositionIncrements), preserveSep);
 
       final CharsRef spare = new CharsRef();
 
@@ -693,7 +646,7 @@ public class AnalyzingSuggester extends Lookup {
 
       final List<LookupResult> results = new ArrayList<LookupResult>();
 
-      List<FSTUtil.Path<Pair<Long,BytesRef>>> prefixPaths = FSTUtil.intersectPrefixPaths(convertAutomaton(lookupAutomaton), fst);
+      List<FSTUtil.Path<Pair<Long,BytesRef>>> prefixPaths = FSTUtil.intersectPrefixPaths(converter.convertAutomaton(lookupAutomaton), fst);
 
       if (exactFirst) {
 
@@ -787,7 +740,7 @@ public class AnalyzingSuggester extends Lookup {
         }
       };
 
-      prefixPaths = getFullPrefixPaths(prefixPaths, lookupAutomaton, fst);
+      prefixPaths = converter.getFullPrefixPaths(prefixPaths, lookupAutomaton, fst);
       
       for (FSTUtil.Path<Pair<Long,BytesRef>> path : prefixPaths) {
         searcher.addStartPaths(path.fstNode, path.output, true, path.input);
@@ -818,60 +771,6 @@ public class AnalyzingSuggester extends Lookup {
     }
   }
 
-  /** Returns all prefix paths to initialize the search. */
-  protected List<FSTUtil.Path<Pair<Long,BytesRef>>> getFullPrefixPaths(List<FSTUtil.Path<Pair<Long,BytesRef>>> prefixPaths,
-                                                                       Automaton lookupAutomaton,
-                                                                       FST<Pair<Long,BytesRef>> fst)
-    throws IOException {
-    return prefixPaths;
-  }
-  
-  final Set<IntsRef> toFiniteStrings(final BytesRef surfaceForm, final TokenStreamToAutomaton ts2a) throws IOException {
- // Analyze surface form:
-    TokenStream ts = indexAnalyzer.tokenStream("", surfaceForm.utf8ToString());
-
-    // Create corresponding automaton: labels are bytes
-    // from each analyzed token, with byte 0 used as
-    // separator between tokens:
-    Automaton automaton = ts2a.toAutomaton(ts);
-    ts.close();
-
-    replaceSep(automaton);
-    automaton = convertAutomaton(automaton);
-
-    assert SpecialOperations.isFinite(automaton);
-
-    // Get all paths from the automaton (there can be
-    // more than one path, eg if the analyzer created a
-    // graph using SynFilter or WDF):
-
-    // TODO: we could walk & add simultaneously, so we
-    // don't have to alloc [possibly biggish]
-    // intermediate HashSet in RAM:
-    return SpecialOperations.getFiniteStrings(automaton, maxGraphExpansions);
-  }
-
-  final Automaton toLookupAutomaton(final CharSequence key) throws IOException {
-    // TODO: is there a Reader from a CharSequence?
-    // Turn tokenstream into automaton:
-    TokenStream ts = queryAnalyzer.tokenStream("", key.toString());
-    Automaton automaton = (getTokenStreamToAutomaton()).toAutomaton(ts);
-    ts.close();
-
-    // TODO: we could use the end offset to "guess"
-    // whether the final token was a partial token; this
-    // would only be a heuristic ... but maybe an OK one.
-    // This way we could eg differentiate "net" from "net ",
-    // which we can't today...
-
-    replaceSep(automaton);
-
-    // TODO: we can optimize this somewhat by determinizing
-    // while we convert
-    BasicOperations.determinize(automaton);
-    return automaton;
-  }
-  
   
 
   /**
@@ -901,4 +800,12 @@ public class AnalyzingSuggester extends Lookup {
       return left.output1.compareTo(right.output1);
     }
   };
+  
+  AutomatonConverter getConverter() {
+    return converter;
+  }
+  
+  public boolean getPreservePositionIncrements() {
+    return preservePositionIncrements;
+  }
 }

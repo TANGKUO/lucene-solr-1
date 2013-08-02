@@ -746,19 +746,19 @@ public class FuzzySuggesterTest extends LuceneTestCase {
       if (VERBOSE) {
         System.out.println("  analyzed: " + analyzedKey);
       }
-      TokenStreamToAutomaton tokenStreamToAutomaton = suggester.getTokenStreamToAutomaton();
-
+      AutomatonConverter converter = suggester.getConverter();
+      TokenStreamToAutomaton tokenStreamToAutomaton = converter.newTokenStreamToAutomaton(suggester.getPreservePositionIncrements());
       // NOTE: not great that we ask the suggester to give
       // us the "answer key" (ie maybe we have a bug in
       // suggester.toLevA ...) ... but testRandom2() fixes
       // this:
-      Automaton automaton = suggester.convertAutomaton(suggester.toLevenshteinAutomata(suggester.toLookupAutomaton(analyzedKey)));
+      Automaton automaton = converter.convertAutomaton(converter.toLookupAutomaton(analyzedKey, a, tokenStreamToAutomaton, preserveSep));
       assertTrue(automaton.isDeterministic());
       // TODO: could be faster... but its slowCompletor for a reason
       BytesRef spare = new BytesRef();
       for (TermFreq2 e : slowCompletor) {
         spare.copyChars(e.analyzedForm);
-        Set<IntsRef> finiteStrings = suggester.toFiniteStrings(spare, tokenStreamToAutomaton);
+        Set<IntsRef> finiteStrings = converter.toFiniteStrings(spare, tokenStreamToAutomaton, a, -1, preserveSep);
         for (IntsRef intsRef : finiteStrings) {
           State p = automaton.getInitialState();
           BytesRef ref = Util.toBytesRef(intsRef, spare);
